@@ -13,15 +13,15 @@ def get_uncertainty(dataloader, model, num_points=10, order='top-k', device='cud
     elif order == 'bottom-k':
         score_idx = torch.sort(torch.tensor(unc_scores), descending=False)[1][:num_points]
     else:
-        raise ValueError(f"Invalid value for 'order': {order}. Expected 'top-k' or 'bottom-k'.")
+        raise ValueError(f"Invalid value for 'order': {order}. Expected 'top-k' or 'bottom-k' for the 'order' parameter.")
     return unc_scores, score_idx
 
 
 def compute_uncertainty_scores(input_x, model, device):
     if len(input_x.shape) > 3:  # (batch_size, channels, image_size, image_size)
-        logits_out = get_image_logits(input_x, model, device)
+        logits_out = get_image_logits(input_x, model, device=device)
     else:                       # (batch_size, embedding_size)
-        logits_out = get_text_logits(input_x, model, device)
+        logits_out = get_text_logits(input_x, model, device=device)
 
     unc_scores = BI_LSE(logits_out)
     return unc_scores
@@ -32,12 +32,13 @@ def get_text_logits(input_x, model, tta_rep=5, device='cuda:0'):
     # evaluate prediction on the augmented textual embeddings
     # and store the corresponding logits
     input_x = input_x.to(device)
-    model.eval()
-    all_logits = []
-    for rep in range(tta_rep):
-        bx_tmp = add_gaussian_noise(input_x)
-        logits_tmp = model(bx_tmp)
-        all_logits.append(logits_tmp)
+    with torch.no_grad():
+        model.eval()
+        all_logits = []
+        for rep in range(tta_rep):
+            bx_tmp = add_gaussian_noise(input_x)
+            logits_tmp = model(bx_tmp)
+            all_logits.append(logits_tmp)
     
     logits_out = torch.stack(all_logits).detach().cpu()
     return logits_out
@@ -61,7 +62,6 @@ def get_image_logits(input_x, model, device='cuda:0'):
             ]
 
     input_x = input_x.to(device)
-
     all_logits = []
     for tr in transform_cands:
         bx_tmp = tr(input_x)
@@ -73,7 +73,7 @@ def get_image_logits(input_x, model, device='cuda:0'):
 
 
 def add_gaussian_noise(embedding_matrix, mean=0, std=0.1, device='cuda:0'):
-    noise = torch.Tensor(np.random.normal(mean, std, size=embedding_matrix.shape)).to(device)
+    noise = torch.normal(mean=mean, std=std, size=embedding_matrix.shape).to(device)
     noisy_embedding_matrix = embedding_matrix + noise
     return noisy_embedding_matrix
 
@@ -91,6 +91,9 @@ def BI_LSE(zs, axis=0, class_axis=-1):
     Arg class_axis: Axis of the class logits
     Output: Tensor with shape length reduced by two
     '''
+    if not isinstance(zs, torch.Tensor):
+        raise TypeError(f"'zs' must be a PyTorch tensor, but got {type(zs)}")
+    
     E_of_LSE = zs.logsumexp(axis=class_axis).mean(axis)
     LSE_of_E = zs.mean(axis).unsqueeze(axis).logsumexp(axis=class_axis).squeeze(axis)
     bi_scores = E_of_LSE - LSE_of_E
